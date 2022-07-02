@@ -62,22 +62,37 @@ public class RedisExecutor<V, R> {
     
     final boolean readOnlyMode; 
     final RedisCommand<V> command; 
-    final Object[] params; 
-    final RPromise<R> mainPromise; 
+    final Object[] params;
+    /**
+     * 最终的Promise
+     */
+    final RPromise<R> mainPromise;
     final boolean ignoreRedirect;
     final RedissonObjectBuilder objectBuilder;
     final ConnectionManager connectionManager;
 
     NodeSource source;
     Codec codec;
+    /**
+     * 当前已经重试几次了
+     */
     volatile int attempt;
     volatile Timeout timeout;
     volatile BiConsumer<R, Throwable> mainPromiseListener;
     volatile ChannelFuture writeFuture;
     volatile RedisException exception;
-    
+
+    /**
+     * 重试的最大次数，默认 3
+     */
     int attempts;
+    /**
+     * 重试时间间隔，默认1.5秒
+     */
     long retryInterval;
+    /**
+     * 响应超时时间，默认3秒
+     */
     long responseTimeout;
     
     public RedisExecutor(boolean readOnlyMode, NodeSource source, Codec codec, RedisCommand<V> command,
@@ -277,7 +292,7 @@ public class RedisExecutor<V, R> {
         }
 
         timeout.cancel();
-
+        // 定时响应超时
         scheduleResponseTimeout(attemptPromise, connection);
     }
 
@@ -649,6 +664,16 @@ public class RedisExecutor<V, R> {
     
     private static final Map<ClassLoader, Map<Codec, Codec>> CODECS = ReferenceCacheMap.soft(0, 0);
 
+    /**
+     * 用当前线程的ClassLoader，复制一个新的Codec，并保存到软引用缓存里 <p/>
+     * 为什么这么做？
+     *     在反序列化时，可能加载新的Class文件，且Codec在反序列化时是在另一个线程中完成的，
+     *   所以，为了保证新的Class的ClassLoader与当前线程的ClassLoader一致，需要将当前线程的ClassLoader
+     *   保存到Codec里，以便反序列化时可能用到 <p/>
+     *   所以，最好使用单例的Codec，不然只能等待软引用回收才能回收到无用的Codec
+     * @param codec
+     * @return
+     */
     protected Codec getCodec(Codec codec) {
         if (codec == null) {
             return codec;

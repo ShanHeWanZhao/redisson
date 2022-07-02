@@ -59,8 +59,14 @@ import io.netty.util.TimerTask;
 public class RedissonLock extends RedissonExpirable implements RLock {
 
     public static class ExpirationEntry {
-        
+
+        /**
+         * 对于互斥锁来说，这个map只会有一对数据，key为线程id，value为锁重入的次数 <p/>
+         */
         private final Map<Long, Integer> threadIds = new LinkedHashMap<>();
+        /**
+         * 重置ttl的任务
+         */
         private volatile Timeout timeout;
         
         public ExpirationEntry() {
@@ -109,11 +115,22 @@ public class RedissonLock extends RedissonExpirable implements RLock {
     }
     
     private static final Logger log = LoggerFactory.getLogger(RedissonLock.class);
-    
+
+    /**
+     * 锁占用后的重置ttl对象的缓存 <p/>
+     * key为锁名
+     */
     private static final ConcurrentMap<String, ExpirationEntry> EXPIRATION_RENEWAL_MAP = new ConcurrentHashMap<>();
+    /**
+     * 默认30秒
+     */
     protected long internalLockLeaseTime;
 
     final String id;
+    /**
+     * 格式：id:lock_name<p/>
+     * 这个entryName可唯一确定是哪个客户端的哪个锁
+     */
     final String entryName;
 
     protected final LockPubSub pubSub;
@@ -172,25 +189,33 @@ public class RedissonLock extends RedissonExpirable implements RLock {
 
     private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
+        // 先尝试获取锁，获取到就可直接返回
         Long ttl = tryAcquire(leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
             return;
         }
-
+        // 异步订阅频道：redisson_lock__channel:{锁名}
         RFuture<RedissonLockEntry> future = subscribe(threadId);
+        // 同步等待订阅成功
         commandExecutor.syncSubscription(future);
 
         try {
-            while (true) {
+            while (true) { // 走到这，就代表订阅成功
+                // 再次尝试获取锁
                 ttl = tryAcquire(leaseTime, unit, threadId);
                 // lock acquired
-                if (ttl == null) {
+                if (ttl == null) { // 获取锁成功，直接返回
                     break;
                 }
 
                 // waiting for message
                 if (ttl >= 0) {
+                    // 利用Semaphore，定时尝试获取锁，时间为ttl。(因为这是定时获取锁，是可自唤醒的，所以类似自旋获取锁)
+                    /*
+                        这个Semaphore初始值就是0，是获取不到的。
+                            只有等待其他线程解锁，向这些订阅的频道发送一条解锁消息，Semaphore的有效值才加一
+                            这是，当前客户端阻塞在这等待获取锁的线程会被立即唤醒一个，继续尝试获取锁 */
                     try {
                         getEntry(threadId).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException e) {
@@ -207,7 +232,7 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                     }
                 }
             }
-        } finally {
+        } finally { // 根据当前客户端是否还有其它线程在阻塞获取锁来决定是否需要取消订阅（引用计数思想）
             unsubscribe(future, threadId);
         }
 //        get(lockAsync(leaseTime, unit));
@@ -241,12 +266,13 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         }
         RFuture<Long> ttlRemainingFuture = tryLockInnerAsync(commandExecutor.getConnectionManager().getCfg().getLockWatchdogTimeout(), TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         ttlRemainingFuture.onComplete((ttlRemaining, e) -> {
-            if (e != null) {
+            if (e != null) { // 有异常
                 return;
             }
 
             // lock acquired
-            if (ttlRemaining == null) {
+            if (ttlRemaining == null) { // key的ttl返回为空，代表加锁成功
+                // 需要设置定时任务，在锁占用期间无限制的重置ttl，以免任务还未执行完锁就过期了，达不到互斥的效果
                 scheduleExpirationRenewal(threadId);
             }
         });
@@ -366,20 +392,22 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
         long threadId = Thread.currentThread().getId();
+        // 先尝试获取或，获取成功就直接返回
         Long ttl = tryAcquire(leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
             return true;
         }
-        
+        // 第一次获取锁失败，判断剩余等待时间
         time -= System.currentTimeMillis() - current;
-        if (time <= 0) {
+        if (time <= 0) { // 没有可用的等待时间了，直接返回失败
             acquireFailed(threadId);
             return false;
         }
         
         current = System.currentTimeMillis();
         RFuture<RedissonLockEntry> subscribeFuture = subscribe(threadId);
+        // 定时阻塞等待订阅成功（这个时间就为剩余尝试时间），如果这期间连频道都没订阅成功，那也可以构造失败并返回了
         if (!subscribeFuture.await(time, TimeUnit.MILLISECONDS)) {
             if (!subscribeFuture.cancel(false)) {
                 subscribeFuture.onComplete((res, e) -> {
@@ -393,13 +421,15 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         }
 
         try {
+            // 继续计算剩余尝试时间
             time -= System.currentTimeMillis() - current;
             if (time <= 0) {
                 acquireFailed(threadId);
                 return false;
             }
         
-            while (true) {
+            while (true) { // 到者就代表既没获取锁成功，剩余尝试时间还没用完
+                // 在死循环初始流程尝试
                 long currentTime = System.currentTimeMillis();
                 ttl = tryAcquire(leaseTime, unit, threadId);
                 // lock acquired
@@ -408,12 +438,13 @@ public class RedissonLock extends RedissonExpirable implements RLock {
                 }
 
                 time -= System.currentTimeMillis() - currentTime;
-                if (time <= 0) {
+                if (time <= 0) { // 没获取到锁，并且剩余尝试时间用完，返回失败
                     acquireFailed(threadId);
                     return false;
                 }
 
                 // waiting for message
+                // 最终还是利用Semaphore的超时等待获取锁来实现的
                 currentTime = System.currentTimeMillis();
                 if (ttl >= 0 && ttl < time) {
                     getEntry(threadId).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
@@ -570,19 +601,19 @@ public class RedissonLock extends RedissonExpirable implements RLock {
         RFuture<Boolean> future = unlockInnerAsync(threadId);
 
         future.onComplete((opStatus, e) -> {
-            if (e != null) {
+            if (e != null) { // redis执行有异常
                 cancelExpirationRenewal(threadId);
                 result.tryFailure(e);
                 return;
             }
 
-            if (opStatus == null) {
+            if (opStatus == null) { // 还没加锁就想解锁，构建一个异常作为Future的失败结果，让上层去处理
                 IllegalMonitorStateException cause = new IllegalMonitorStateException("attempt to unlock lock, not locked by current thread by node id: "
                         + id + " thread-id: " + threadId);
                 result.tryFailure(cause);
                 return;
             }
-            
+            // 判断是否需要移除重置key的tll任务（如果锁有重入，是不需要移除的）
             cancelExpirationRenewal(threadId);
             result.trySuccess(null);
         });

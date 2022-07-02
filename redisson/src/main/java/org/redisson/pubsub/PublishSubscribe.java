@@ -51,6 +51,7 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
         semaphore.acquire(new Runnable() {
             @Override
             public void run() {
+                // 减少锁持有的引用计数，如果变为0，代表这个客户端没有线程在阻塞获取这把锁了，就取消订阅
                 if (entry.release() == 0) {
                     // just an assertion
                     boolean removed = entries.remove(entryName) == entry;

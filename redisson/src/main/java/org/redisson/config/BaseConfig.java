@@ -48,14 +48,16 @@ class BaseConfig<T extends BaseConfig<T>> {
 
     /**
      * Timeout during connecting to any Redis server.
-     * Value in milliseconds.
+     * Value in milliseconds. <p/>
+     * 连接到redis的等待超时时间（毫秒）
      *
      */
     private int connectTimeout = 10000;
 
     /**
      * Redis server response timeout. Starts to countdown when Redis command was succesfully sent.
-     * Value in milliseconds.
+     * Value in milliseconds. <p/>
+     * 等待redis节点回复命令的时间。从客户端命令发送成功时开始计时（毫秒）
      *
      */
     private int timeout = 3000;

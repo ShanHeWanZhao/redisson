@@ -49,7 +49,12 @@ public class ReferenceCacheMap<K, V> extends AbstractCacheMap<K, V> {
     protected CachedValue<K, V> create(K key, V value, long ttl, long maxIdleTime) {
         return new ReferenceCachedValue<K, V>(key, value, ttl, maxIdleTime, queue, type);
     }
-    
+
+    /**
+     * 因为不确定软引用什么时候被回收，所以，这里每次添加数据时都是要检验是否被回收了，始终返回true
+     * @param key
+     * @return
+     */
     @Override
     protected boolean isFull(K key) {
         return true;
@@ -58,6 +63,7 @@ public class ReferenceCacheMap<K, V> extends AbstractCacheMap<K, V> {
     @Override
     protected boolean removeExpiredEntries() {
         while (true) {
+            // 弹出的引用不为空就代表这个引用保存的对象已经被回收了，这时需要清理map里缓存的对象
             CachedValueReference value = (CachedValueReference) queue.poll();
             if (value == null) {
                 break;

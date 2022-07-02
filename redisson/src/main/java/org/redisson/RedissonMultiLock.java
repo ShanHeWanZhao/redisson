@@ -314,6 +314,7 @@ public class RedissonMultiLock implements RLock {
         }
 
         for (RFuture<Void> unlockFuture : futures) {
+            // 同步等待解锁的Future，就算Future里有异常，也不会抛出去。所以，放心解锁吧
             unlockFuture.awaitUninterruptibly();
         }
     }
@@ -370,8 +371,9 @@ public class RedissonMultiLock implements RLock {
         if (waitTime != -1) {
             remainTime = unit.toMillis(waitTime);
         }
+        // 获取每个锁时的超时等待事件（我们指定的等待时间均等分）
         long lockWaitTime = calcLockWaitTime(remainTime);
-        
+        // 获取分锁失败数阈值（分锁个数的小一半）
         int failedLocksLimit = failedLocksLimit();
         List<RLock> acquiredLocks = new ArrayList<>(locks.size());
         for (ListIterator<RLock> iterator = locks.listIterator(); iterator.hasNext();) {
@@ -391,14 +393,16 @@ public class RedissonMultiLock implements RLock {
                 lockAcquired = false;
             }
             
-            if (lockAcquired) {
+            if (lockAcquired) { // 获取锁成功
                 acquiredLocks.add(lock);
-            } else {
+            } else { // 当前分锁失败，但不代表总锁获取失败
                 if (locks.size() - acquiredLocks.size() == failedLocksLimit()) {
+                    // 虽然当前RLock获取失败，但成功总数已经到达了最低成功个数阈值，直接break，返回获取锁成功
                     break;
                 }
 
-                if (failedLocksLimit == 0) {
+                if (failedLocksLimit == 0) { // 不允许由分锁获取失败的情况，但还是分锁获取失败
+                    // 出现这种情况就是分锁个数小于3，但分锁又获取失败，直接释放获取成功的分锁，返回获取锁失败
                     unlockInner(acquiredLocks);
                     if (waitTime == -1) {
                         return false;
@@ -409,12 +413,12 @@ public class RedissonMultiLock implements RLock {
                     while (iterator.hasPrevious()) {
                         iterator.previous();
                     }
-                } else {
+                } else { // 减小分锁失败最大阈值
                     failedLocksLimit--;
                 }
             }
             
-            if (remainTime != -1) {
+            if (remainTime != -1) { // 计算剩余等待时间，如果没有了（超时），释放获取到的锁，再返回失败
                 remainTime -= System.currentTimeMillis() - time;
                 time = System.currentTimeMillis();
                 if (remainTime <= 0) {
@@ -464,6 +468,8 @@ public class RedissonMultiLock implements RLock {
     
     @Override
     public void unlock() {
+        // 尝试对所有锁解锁，就算某个锁解锁失败（比如根本就没获取到这个锁没，出现IllegalMonitorStateException异常），也不会抛出异常
+        // 所以，放心解锁
         List<RFuture<Void>> futures = new ArrayList<>(locks.size());
 
         for (RLock lock : locks) {
