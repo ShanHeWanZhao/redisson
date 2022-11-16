@@ -47,6 +47,7 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
     public void unsubscribe(E entry, String entryName, String channelName) {
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
         semaphore.acquire(() -> {
+            // 减少锁持有的引用计数，如果变为0，代表这个客户端没有线程在阻塞获取这把锁了，就取消订阅
             if (entry.release() == 0) {
                 entries.remove(entryName);
                 service.unsubscribe(PubSubType.UNSUBSCRIBE, new ChannelName(channelName))
@@ -64,6 +65,7 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
         CompletableFuture<E> newPromise = new CompletableFuture<>();
 
+        // 设置一个超时检测的定时任务
         int timeout = service.getConnectionManager().getConfig().getTimeout();
         Timeout lockTimeout = service.getConnectionManager().newTimeout(t -> {
             newPromise.completeExceptionally(new RedisTimeoutException(
@@ -78,7 +80,7 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
             }
 
             E entry = entries.get(entryName);
-            if (entry != null) {
+            if (entry != null) { // 已经订阅过，表示当前客户端有其他线程也在获取锁 or 锁重入
                 entry.acquire();
                 semaphore.release();
                 entry.getPromise().whenComplete((r, e) -> {
@@ -90,9 +92,9 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
                 });
                 return;
             }
-
+            // 到这就代表当前客户端是第一次订阅
             E value = createEntry(newPromise);
-            value.acquire();
+            value.acquire(); // 引用计数 + 1
 
             E oldValue = entries.putIfAbsent(entryName, value);
             if (oldValue != null) {
@@ -107,8 +109,9 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
                 });
                 return;
             }
-
+            // 创建这个channel的监听器（当服务端publish时，会通知到这个Listener）
             RedisPubSubListener<Object> listener = createListener(channelName, value);
+            // 开始订阅channel
             CompletableFuture<PubSubConnectionEntry> s = service.subscribe(LongCodec.INSTANCE, channelName, semaphore, listener);
             s.whenComplete((r, e) -> {
                 if (e != null) {

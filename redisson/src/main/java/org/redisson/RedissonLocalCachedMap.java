@@ -46,6 +46,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+
+/**
+ * 本地缓存和redis缓存同时存在的Map，牺牲客户端内存空间的方式，换取在频繁获取某些常用数据时消耗在网络上的时间 <br/>
+ * 非常适合适合分布式场景下读取频繁，更新不频繁的缓存数据
+ */
 @SuppressWarnings("serial")
 public class RedissonLocalCachedMap<K, V> extends RedissonMap<K, V> implements RLocalCachedMap<K, V> {
 
@@ -59,13 +64,34 @@ public class RedissonLocalCachedMap<K, V> extends RedissonMap<K, V> implements R
     
     private long cacheUpdateLogTime = TimeUnit.MINUTES.toMillis(10);
     private byte[] instanceId;
+    /**
+     * 本地缓存，提供了三方的caffeine缓存和redisson内部自己设计的缓存<p/>
+     * 默认用redisson自己设计的缓存：{@link org.redisson.api.LocalCachedMapOptions.EvictionPolicy}
+     */
     private ConcurrentMap<CacheKey, CacheValue> cache;
     private int invalidateEntryOnChange;
+    /**
+     * 同步策略，默认 {@link SyncStrategy#INVALIDATE}
+     */
     private SyncStrategy syncStrategy;
+    /**
+     * 存储模式<p/>
+     * 默认{@link org.redisson.api.LocalCachedMapOptions.StoreMode#LOCALCACHE_REDIS}
+     */
     private LocalCachedMapOptions.StoreMode storeMode;
+    /**
+     * 当map种key对应的value为null时，是否储存在本地<p/>
+     * 默认为false，代表value为null就不储存再本地缓存中
+     */
     private boolean storeCacheMiss;
 
+    /**
+     * pub/sub通知的监听器
+     */
     private LocalCacheListener listener;
+    /**
+     * 本地缓存的视图工具，主要用来遍历本地缓存的
+     */
     private LocalCacheView<K, V> localCacheView;
     
     public RedissonLocalCachedMap(CommandAsyncExecutor commandExecutor, String name, LocalCachedMapOptions<K, V> options, 
@@ -274,7 +300,7 @@ public class RedissonLocalCachedMap<K, V> extends RedissonMap<K, V> implements R
         RPromise<V> result = new RedissonPromise<>();
         RFuture<V> future = super.getAsync((K) key);
         future.onComplete((value, e) -> {
-            if (e != null) {
+                if (e != null) {
                 result.tryFailure(e);
                 return;
             }

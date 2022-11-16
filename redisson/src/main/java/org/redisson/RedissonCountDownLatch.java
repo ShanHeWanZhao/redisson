@@ -253,9 +253,9 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
     @Override
     public RFuture<Void> countDownAsync() {
         return commandExecutor.evalWriteNoRetryAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
-                        "local v = redis.call('decr', KEYS[1]);" +
-                        "if v <= 0 then redis.call('del', KEYS[1]) end;" +
-                        "if v == 0 then redis.call('publish', KEYS[2], ARGV[1]) end;",
+                        "local v = redis.call('decr', KEYS[1]);" + // 先将key减1，存储减完之后的值
+                        "if v <= 0 then redis.call('del', KEYS[1]) end;" + // 可以删除的话就先先删除
+                        "if v == 0 then redis.call('publish', KEYS[2], ARGV[1]) end;", // 值为0，可以发送信号解阻塞了
                     Arrays.<Object>asList(getRawName(), getChannelName()), CountDownLatchPubSub.ZERO_COUNT_MESSAGE);
     }
 
@@ -287,7 +287,7 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
                 "if redis.call('exists', KEYS[1]) == 0 then "
                     + "redis.call('set', KEYS[1], ARGV[2]); "
-                    + "redis.call('publish', KEYS[2], ARGV[1]); "
+                    + "redis.call('publish', KEYS[2], ARGV[1]); " // publish消息，告知客户端的ReclosableLatch可以重置，以此循环利用RCountDownLatch
                     + "return 1 "
                 + "else "
                     + "return 0 "

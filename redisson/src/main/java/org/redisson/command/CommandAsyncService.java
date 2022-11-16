@@ -485,7 +485,7 @@ public class CommandAsyncService implements CommandAsyncExecutor {
     
     private <T, R> RFuture<R> evalAsync(NodeSource nodeSource, boolean readOnlyMode, Codec codec, RedisCommand<T> evalCommandType,
                                         String script, List<Object> keys, boolean noRetry, Object... params) {
-        if (isEvalCacheActive() && evalCommandType.getName().equals("EVAL")) {
+        if (isEvalCacheActive() && evalCommandType.getName().equals("EVAL")) { // 开启脚本缓存并使用eval命令
             CompletableFuture<R> mainPromise = new CompletableFuture<>();
             
             Object[] pps = copy(params);
@@ -506,9 +506,11 @@ public class CommandAsyncService implements CommandAsyncExecutor {
 
             promise.whenComplete((res, e) -> {
                 if (e != null) {
-                    if (e.getMessage().startsWith("NOSCRIPT")) {
+                    if (e.getMessage().startsWith("NOSCRIPT")) { // 还没load lua脚本的
+                        // 先load lua脚本
                         RFuture<String> loadFuture = loadScript(executor.getRedisClient(), script);
                         loadFuture.whenComplete((r, ex) -> {
+                            // load完成，再重新执行命令
                             if (ex != null) {
                                 free(pps);
                                 mainPromise.completeExceptionally(ex);

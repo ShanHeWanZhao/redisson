@@ -18,14 +18,20 @@ package org.redisson.cache;
 import java.io.Serializable;
 
 /**
- * 
+ * LocalCacheMap的删除key的消息
  * @author Nikita Koksharov
  *
  */
 @SuppressWarnings("serial")
 public class LocalCachedMapInvalidate implements Serializable {
 
+    /**
+     * 需要排除的LocalCacheMap实例id（发起这个消息的实例已经处理过，所以就可以排除掉）
+     */
     private byte[] excludedId;
+    /**
+     * map中key的hash，以此定位到具体某个key
+     */
     private byte[][] keyHashes;
 
     public LocalCachedMapInvalidate() {

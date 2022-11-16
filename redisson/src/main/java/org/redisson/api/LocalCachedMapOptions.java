@@ -65,12 +65,14 @@ public class LocalCachedMapOptions<K, V> extends MapOptions<K, V> {
         NONE,
         
         /**
-         * Invalidate local cache entry across all LocalCachedMap instances on map entry change. Broadcasts map entry hash (16 bytes) to all instances.
+         * Invalidate local cache entry across all LocalCachedMap instances on map entry change. Broadcasts map entry hash (16 bytes) to all instances.<p/>
+         * 删除本地缓存（当查找时再从redis获取对应key的数据，即是一种懒加载策略）
          */
         INVALIDATE,
         
         /**
-         * Update local cache entry across all LocalCachedMap instances on map entry change. Broadcasts full map entry state (Key and Value objects) to all instances.
+         * Update local cache entry across all LocalCachedMap instances on map entry change. Broadcasts full map entry state (Key and Value objects) to all instances.<p/>
+         * 更新本地缓存（会实时的更新其他客户端的本地缓存，非懒加载）
          */
         UPDATE
         
@@ -117,12 +119,14 @@ public class LocalCachedMapOptions<K, V> extends MapOptions<K, V> {
     public enum StoreMode {
 
         /**
-         * Store data only in local cache.
+         * Store data only in local cache. <p/>
+         * 仅本地缓存，不使用redis缓存
          */
         LOCALCACHE,
 
         /**
-         * Store data only in both Redis and local cache.
+         * Store data only in both Redis and local cache. <p/>
+         * 本地缓存和redis缓存使用
          */
         LOCALCACHE_REDIS
 

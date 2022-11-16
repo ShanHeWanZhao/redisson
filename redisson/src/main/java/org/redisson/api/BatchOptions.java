@@ -71,6 +71,9 @@ public final class BatchOptions {
     private long retryInterval;
 
     private long syncTimeout;
+    /**
+     * 需要同步的从节点数量
+     */
     private int syncSlaves;
     private boolean skipResult;
 

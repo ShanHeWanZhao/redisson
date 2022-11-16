@@ -47,6 +47,9 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class RedissonLock extends RedissonBaseLock {
 
+    /**
+     * 默认30秒
+     */
     protected long internalLockLeaseTime;
 
     protected final LockPubSub pubSub;
@@ -95,13 +98,16 @@ public class RedissonLock extends RedissonBaseLock {
 
     private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
+        // 先尝试获取锁，获取到就可直接返回
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
         // lock acquired
-        if (ttl == null) {
+        if (ttl == null) { // 加锁成功
             return;
         }
 
+        // 异步订阅频道：redisson_lock__channel:{锁名}
         CompletableFuture<RedissonLockEntry> future = subscribe(threadId);
+        // 同步等待订阅成功
         if (interruptibly) {
             commandExecutor.syncSubscriptionInterrupted(future);
         } else {
@@ -109,16 +115,23 @@ public class RedissonLock extends RedissonBaseLock {
         }
 
         try {
-            while (true) {
+            while (true) {  // 走到这，就代表订阅成功。死循环获取锁，直到获取成功或抛异常才跳出循环
+                // 再次尝试获取锁
                 ttl = tryAcquire(-1, leaseTime, unit, threadId);
                 // lock acquired
-                if (ttl == null) {
+                if (ttl == null) { // 获取锁成功，直接返回
                     break;
                 }
 
                 // waiting for message
-                if (ttl >= 0) {
+                if (ttl >= 0) { // redis的key存在ttl，定时尝试 + publish的通知 两种方法
                     try {
+                        // 利用jdk的Semaphore，定时尝试获取锁，时间为ttl。
+                        // 因为获取到锁的客户端可能宕机导致不能publish解锁的消息，所以这里也需要定时ttl的时间来尝试加锁来解决这种情况
+                        /*
+                            这个Semaphore初始值就是0，是会阻塞的。
+                            只有等待获取到锁的线程解锁时，向这个订阅的频道发送一条解锁消息，Semaphore的有效值才加一
+                            这时，当前客户端阻塞在这等待获取锁的线程会被立即唤醒一个，继续尝试获取锁 */
                         commandExecutor.getNow(future).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException e) {
                         if (interruptibly) {
@@ -126,7 +139,7 @@ public class RedissonLock extends RedissonBaseLock {
                         }
                         commandExecutor.getNow(future).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                     }
-                } else {
+                } else { // redis的key不存在过期时间，只有等待 publish的通知 这一种方法
                     if (interruptibly) {
                         commandExecutor.getNow(future).getLatch().acquire();
                     } else {
@@ -134,7 +147,7 @@ public class RedissonLock extends RedissonBaseLock {
                     }
                 }
             }
-        } finally {
+        } finally { // 根据当前客户端是否还有其它线程在阻塞获取锁来决定是否需要取消订阅（引用计数思想）
             unsubscribe(commandExecutor.getNow(future), threadId);
         }
 //        get(lockAsync(leaseTime, unit));
@@ -155,10 +168,10 @@ public class RedissonLock extends RedissonBaseLock {
 
         CompletionStage<Boolean> f = acquiredFuture.thenApply(acquired -> {
             // lock acquired
-            if (acquired) {
+            if (acquired) { // 加锁成功
                 if (leaseTime != -1) {
                     internalLockLeaseTime = unit.toMillis(leaseTime);
-                } else {
+                } else { // 设置定时任务续约ttl
                     scheduleExpirationRenewal(threadId);
                 }
             }
@@ -177,10 +190,11 @@ public class RedissonLock extends RedissonBaseLock {
         }
         CompletionStage<Long> f = ttlRemainingFuture.thenApply(ttlRemaining -> {
             // lock acquired
-            if (ttlRemaining == null) {
+            if (ttlRemaining == null) { // key的ttl返回为空，代表加锁成功
                 if (leaseTime != -1) {
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {
+                    // 需要设置定时任务，在锁占用期间无限制的重置ttl，以免任务还未执行完锁就过期了，达不到互斥的效果
                     scheduleExpirationRenewal(threadId);
                 }
             }
@@ -215,20 +229,22 @@ public class RedissonLock extends RedissonBaseLock {
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
         long threadId = Thread.currentThread().getId();
+        // 先尝试获取或，获取成功就直接返回
         Long ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
             return true;
         }
-        
+        // 第一次获取锁失败，判断剩余等待时间
         time -= System.currentTimeMillis() - current;
-        if (time <= 0) {
+        if (time <= 0) { // 没有可用的等待时间了，直接返回失败
             acquireFailed(waitTime, unit, threadId);
             return false;
         }
         
         current = System.currentTimeMillis();
         CompletableFuture<RedissonLockEntry> subscribeFuture = subscribe(threadId);
+        // 定时阻塞等待订阅成功（这个时间就为剩余尝试时间），如果这期间连频道都没订阅成功，那也可以构造失败并返回了
         try {
             subscribeFuture.toCompletableFuture().get(time, TimeUnit.MILLISECONDS);
         } catch (ExecutionException | TimeoutException e) {
@@ -244,13 +260,15 @@ public class RedissonLock extends RedissonBaseLock {
         }
 
         try {
+            // 继续计算剩余尝试时间
             time -= System.currentTimeMillis() - current;
             if (time <= 0) {
                 acquireFailed(waitTime, unit, threadId);
                 return false;
             }
         
-            while (true) {
+            while (true) {// 到者就代表既没获取锁成功，剩余尝试时间还没用完
+                // 在死循环初始流程尝试
                 long currentTime = System.currentTimeMillis();
                 ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
                 // lock acquired
@@ -259,12 +277,13 @@ public class RedissonLock extends RedissonBaseLock {
                 }
 
                 time -= System.currentTimeMillis() - currentTime;
-                if (time <= 0) {
+                if (time <= 0) {  // 没获取到锁，并且剩余尝试时间用完，返回失败
                     acquireFailed(waitTime, unit, threadId);
                     return false;
                 }
 
                 // waiting for message
+                // 最终还是利用Semaphore的超时等待获取锁来实现的
                 currentTime = System.currentTimeMillis();
                 if (ttl >= 0 && ttl < time) {
                     commandExecutor.getNow(subscribeFuture).getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);

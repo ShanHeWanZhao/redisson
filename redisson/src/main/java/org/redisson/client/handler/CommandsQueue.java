@@ -39,8 +39,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class CommandsQueue extends ChannelDuplexHandler {
 
+    /**
+     * 虽然是个队列，但里面只会有一个元素。因为线程会独占一个RedisConnection，直到接收到数据才会归还这个RedisConnection。<br/>
+     * 所以，异步callback时从这个队列中取出来的QueueCommand是对称的，可以以此来complete一个Promise
+     */
     public static final AttributeKey<Deque<QueueCommandHolder>> COMMANDS_QUEUE = AttributeKey.valueOf("COMMANDS_QUEUE");
 
+    /**
+     * 当Channel 触发connect事件时，创建一个ConcurrentLinkedDeque用于保存QueueCommand，用于请求的回调处理
+     */
     @Override
     public void connect(ChannelHandlerContext ctx, SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) throws Exception {
         super.connect(ctx, remoteAddress, localAddress, promise);

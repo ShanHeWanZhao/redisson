@@ -57,6 +57,9 @@ public class RedisConnection implements RedisCommands {
     volatile Channel channel;
 
     private CompletableFuture<?> connectionPromise;
+    /**
+     * 当前Connection最近一次使用时间的纳秒值
+     */
     private long lastUsageTime;
     private Runnable connectedListener;
     private Runnable disconnectedListener;

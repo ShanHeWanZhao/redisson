@@ -52,8 +52,9 @@ import java.util.function.BiConsumer;
 
 /**
  *
- * @author Nikita Koksharov
+ * @author Nikita Koksharov <p/>
  *
+ * redis 命令的执行器
  * @param <V> type of value
  * @param <R> type of returned value
  */
@@ -65,6 +66,9 @@ public class RedisExecutor<V, R> {
     final boolean readOnlyMode;
     final RedisCommand<V> command;
     final Object[] params;
+    /**
+     * 最终的Promise
+     */
     final CompletableFuture<R> mainPromise;
     final boolean ignoreRedirect;
     final RedissonObjectBuilder objectBuilder;
@@ -72,17 +76,35 @@ public class RedisExecutor<V, R> {
     final RedissonObjectBuilder.ReferenceType referenceType;
     final boolean noRetry;
 
+    /**
+     * 获取连接到Redis的Connection的Future
+     */
     CompletableFuture<RedisConnection> connectionFuture;
     NodeSource source;
     Codec codec;
+    /**
+     * 当前已经重试几次了
+     */
     volatile int attempt;
     volatile Timeout timeout;
     volatile BiConsumer<R, Throwable> mainPromiseListener;
+    /**
+     * 向Channel写数据操作的future，可以通过这个Future来判断数据是否发送出去
+     */
     volatile ChannelFuture writeFuture;
     volatile RedisException exception;
 
+    /**
+     * 重试的最大次数，默认 3
+     */
     int attempts;
+    /**
+     * 重试时间间隔，默认1.5秒
+     */
     long retryInterval;
+    /**
+     * 响应超时时间，默认3秒
+     */
     long responseTimeout;
 
     public RedisExecutor(boolean readOnlyMode, NodeSource source, Codec codec, RedisCommand<V> command,
@@ -123,6 +145,7 @@ public class RedisExecutor<V, R> {
 
         CompletableFuture<RedisConnection> connectionFuture = getConnection().toCompletableFuture();
 
+        // 尝试重试的Promise。Channel返回结果后，解析数据到这个attemptPromise，再由这个attemptPromise触发complete，将结果转移到mainPromise
         CompletableFuture<R> attemptPromise = new CompletableFuture<>();
         mainPromiseListener = (r, e) -> {
             if (mainPromise.isCancelled() && connectionFuture.cancel(false)) {
@@ -156,6 +179,7 @@ public class RedisExecutor<V, R> {
                 return;
             }
 
+            // 准备发送数据
             sendCommand(attemptPromise, connection);
 
             writeFuture.addListener(new ChannelFutureListener() {
@@ -166,7 +190,7 @@ public class RedisExecutor<V, R> {
             });
         });
 
-        attemptPromise.whenComplete((r, e) -> {
+        attemptPromise.whenComplete((r, e) -> { // 读取完成Channel中的数据后触发
             releaseConnection(attemptPromise, connectionFuture);
 
             checkAttemptPromise(attemptPromise, connectionFuture);
@@ -286,7 +310,7 @@ public class RedisExecutor<V, R> {
         }
 
         timeout.cancel();
-
+        // 定时响应超时
         scheduleResponseTimeout(attemptPromise, connection);
     }
 
@@ -409,6 +433,9 @@ public class RedisExecutor<V, R> {
         }
     }
 
+    /**
+     * 处理异常和完成mainPromise
+     */
     protected void checkAttemptPromise(CompletableFuture<R> attemptFuture, CompletableFuture<RedisConnection> connectionFuture) {
         timeout.cancel();
         if (attemptFuture.isCancelled()) {
@@ -547,6 +574,9 @@ public class RedisExecutor<V, R> {
         }
     }
 
+    /**
+     * 释放RedisConnection，归还到空闲的连接池里（具体是ClientConnectionsEntry#freeConnections字段）
+     */
     protected void releaseConnection(CompletableFuture<R> attemptPromise, CompletableFuture<RedisConnection> connectionFuture) {
         if (connectionFuture.isDone() && connectionFuture.isCompletedExceptionally()) {
             return;
@@ -596,6 +626,16 @@ public class RedisExecutor<V, R> {
 
     private static final Map<ClassLoader, Map<Codec, Codec>> CODECS = new LRUCacheMap<>(25, 0, 0);
 
+    /**
+     * 用当前线程的ClassLoader，复制一个新的Codec，并保存到软引用缓存里 <p/>
+     * 为什么这么做？
+     *     在反序列化时，可能加载新的Class文件，且Codec在反序列化时是在另一个线程中完成的，
+     *   所以，为了保证新的Class的ClassLoader与当前线程的ClassLoader一致，需要将当前线程的ClassLoader
+     *   保存到Codec里，以便反序列化时可能用到 <p/>
+     *   所以，最好使用单例的Codec，不然只能等待软引用回收才能回收到无用的Codec
+     * @param codec
+     * @return
+     */
     protected Codec getCodec(Codec codec) {
         if (codec == null) {
             return null;

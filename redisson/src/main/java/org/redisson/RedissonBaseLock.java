@@ -51,8 +51,13 @@ import java.util.concurrent.locks.Condition;
 public abstract class RedissonBaseLock extends RedissonExpirable implements RLock {
 
     public static class ExpirationEntry {
-
+        /**
+         * 对于互斥锁来说，这个map只会有一对数据，key为线程id，value为锁重入的次数 <p/>
+         */
         private final Map<Long, Integer> threadIds = new LinkedHashMap<>();
+        /**
+         * 重置ttl的任务
+         */
         private volatile Timeout timeout;
 
         public ExpirationEntry() {
@@ -102,10 +107,21 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
 
     private static final Logger log = LoggerFactory.getLogger(RedissonBaseLock.class);
 
+    /**
+     * 锁占用后的重置ttl对象的缓存 <p/>
+     * key为锁名
+     */
     private static final ConcurrentMap<String, ExpirationEntry> EXPIRATION_RENEWAL_MAP = new ConcurrentHashMap<>();
+    /**
+     * 默认30秒
+     */
     protected long internalLockLeaseTime;
 
     final String id;
+    /**
+     * 格式：id:lock_name<p/>
+     * 这个entryName可唯一确定是哪个客户端的哪个线程的锁
+     */
     final String entryName;
 
     final CommandAsyncExecutor commandExecutor;
@@ -152,10 +168,11 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
                         return;
                     }
                     
-                    if (res) {
+                    if (res) { // true代表续约成功，继续定时
                         // reschedule itself
                         renewExpiration();
-                    } else {
+                    } else { // 续约失败（redis中key丢失），取消续约的定时任务
+                        // 传null是bug修复后的结果。避免在锁丢失的情况下，如果获取到互斥锁的线程有重入，则不一定会取消定时任务。而当其他线程设置了锁后，这个定时任务还会发挥作用，造成bug
                         cancelExpirationRenewal(null);
                     }
                 });
@@ -168,9 +185,9 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
     protected void scheduleExpirationRenewal(long threadId) {
         ExpirationEntry entry = new ExpirationEntry();
         ExpirationEntry oldEntry = EXPIRATION_RENEWAL_MAP.putIfAbsent(getEntryName(), entry);
-        if (oldEntry != null) {
+        if (oldEntry != null) { // 锁重入
             oldEntry.addThreadId(threadId);
-        } else {
+        } else { // 第一次加锁
             entry.addThreadId(threadId);
             try {
                 renewExpiration();
@@ -193,6 +210,9 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
                 internalLockLeaseTime, getLockName(threadId));
     }
 
+    /**
+     * @param threadId 传null，则取消这个锁关联的所有定时续约任务。传入线程id，则对当前线程重入次数减1，直到为0才取消这个线程关联的续约任务
+     */
     protected void cancelExpirationRenewal(Long threadId) {
         ExpirationEntry task = EXPIRATION_RENEWAL_MAP.get(getEntryName());
         if (task == null) {
@@ -214,15 +234,21 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
 
     protected <T> RFuture<T> evalWriteAsync(String key, Codec codec, RedisCommand<T> evalCommandType, String script, List<Object> keys, Object... params) {
         MasterSlaveEntry entry = commandExecutor.getConnectionManager().getEntry(getRawName());
+        // 执行当前命令的master节点的从节点数量
         int availableSlaves = entry.getAvailableSlaves();
 
+        // 创建批量命令执行器（主要是为了添加WAIT命令，等待数据同步到从节点。但使用了批量命令执行器，就用不了script cache了）
         CommandBatchService executorService = createCommandBatchService(availableSlaves);
+        // 这里并不会直接执行命令，而是将命令保存起来，等待后续添加其他命令（比如WAIT）后再一起执行
         RFuture<T> result = executorService.evalWriteAsync(key, codec, evalCommandType, script, keys, params);
         if (commandExecutor instanceof CommandBatchService) {
             return result;
         }
-
+        // 真正的执行：根据配置再适当添加命令，然后一起执行
         RFuture<BatchResult<?>> future = executorService.executeAsync();
+
+        // 设置一个等待这个future完成（正常结束或异常结束）的listener，用来判断redis实际同步的从节点数量是否是我们指定的从节点数量，并抛出异常
+        // fixme 感觉这种实现方式不好，所以最新的版本已经让用户来选择是否抛异常了
         CompletionStage<T> f = future.handle((res, ex) -> {
             if (ex == null && res.getSyncedSlaves() != availableSlaves) {
                 throw new CompletionException(new IllegalStateException("Only "
@@ -307,6 +333,8 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         RFuture<Boolean> future = unlockInnerAsync(threadId);
 
         CompletionStage<Void> f = future.handle((opStatus, e) -> {
+            // 无论是否解锁成功，都取消锁续约的定时任务
+            // 可能出现redis服务器重启导致锁消失，虽然当前线程获取了锁，但锁已不存在，解锁就会失败
             cancelExpirationRenewal(threadId);
 
             if (e != null) {

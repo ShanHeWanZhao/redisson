@@ -56,6 +56,9 @@ public abstract class LocalCacheListener {
     private CommandAsyncExecutor commandExecutor;
     private Map<?, ?> cache;
     private RObject object;
+    /**
+     * 当前RedissonLocalCacheMap的实例id
+     */
     private byte[] instanceId = new byte[16];
     private Codec codec;
     private LocalCachedMapOptions<?, ?> options;
@@ -134,7 +137,7 @@ public abstract class LocalCacheListener {
     
     public void add(Map<?, ?> cache) {
         this.cache = cache;
-        
+        // 使用专属的LocalCachedMessageCodec编解码器处理channel里发布的消息
         invalidationTopic = RedissonTopic.createRaw(LocalCachedMessageCodec.INSTANCE, commandExecutor, getInvalidationTopicName());
 
         if (options.getReconnectionStrategy() != ReconnectionStrategy.NONE) {
@@ -155,6 +158,7 @@ public abstract class LocalCacheListener {
         }
         
         if (options.getSyncStrategy() != SyncStrategy.NONE) {
+            // 开始subscribe redis的channel并注册对应的listener
             syncListenerId = invalidationTopic.addListener(Object.class, new MessageListener<Object>() {
                 @Override
                 public void onMessage(CharSequence channel, Object msg) {

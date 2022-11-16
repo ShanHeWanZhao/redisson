@@ -103,6 +103,9 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
 
     protected Codec codec;
 
+    /**
+     * 默认32线程：redisson-netty
+     */
     protected final EventLoopGroup group;
 
     protected final Class<? extends SocketChannel> socketChannelClass;
@@ -120,7 +123,10 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
     private IdleConnectionWatcher connectionWatcher;
 
     private final ConnectionEventsHub connectionEventsHub = new ConnectionEventsHub();
-    
+
+    /**
+     * 默认16线程：redisson
+     */
     private final ExecutorService executor; 
     
     private final Config cfg;
@@ -177,6 +183,7 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
                 this.resolverGroup = cfg.getAddressResolverGroupFactory().create(KQueueDatagramChannel.class, DnsServerAddressStreamProviders.platformDefault());
             }
         } else {
+            // 没配置就默认32线程
             if (cfg.getEventLoopGroup() == null) {
                 this.group = new NioEventLoopGroup(cfg.getNettyThreads(), new DefaultThreadFactory("redisson-netty"));
             } else {

@@ -327,11 +327,11 @@ public class CommandDecoder extends ReplayingDecoder<State> {
 
     protected void decode(ByteBuf in, CommandData<Object, Object> data, List<Object> parts, Channel channel, boolean skipConvertor, List<CommandData<?, ?>> commandsData) throws IOException {
         int code = in.readByte();
-        if (code == '+') {
+        if (code == '+') { // 返回字符串
             String result = readString(in);
 
             handleResult(data, parts, result, skipConvertor);
-        } else if (code == '-') {
+        } else if (code == '-') { // 错误协议格式
             String error = readString(in);
 
             if (error.startsWith("MOVED")) {
@@ -372,10 +372,10 @@ public class CommandDecoder extends ReplayingDecoder<State> {
                     log.error("Error message from Redis: {} channel: {}", error, channel);
                 }
             }
-        } else if (code == ':') {
+        } else if (code == ':') { // 返回数字
             Long result = readLong(in);
             handleResult(data, parts, result, false);
-        } else if (code == '$') {
+        } else if (code == '$') { // 字符串块
             ByteBuf buf = readBytes(in);
             Object result = null;
             if (buf != null) {
@@ -383,7 +383,7 @@ public class CommandDecoder extends ReplayingDecoder<State> {
                 result = decoder.decode(buf, state());
             }
             handleResult(data, parts, result, false);
-        } else if (code == '*') {
+        } else if (code == '*') { // 数组类型
             long size = readLong(in);
             List<Object> respParts = new ArrayList<Object>(Math.max((int) size, 0));
             

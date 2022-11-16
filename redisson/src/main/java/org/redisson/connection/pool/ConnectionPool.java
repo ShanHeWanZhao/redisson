@@ -256,6 +256,7 @@ abstract class ConnectionPool<T extends RedisConnection> {
             return;
         }
 
+        // 获取空闲的RedisConnection
         T conn = poll(entry, command);
         if (conn != null) {
             if (!conn.isActive() && entry.getNodeType() == NodeType.SLAVE) {
@@ -265,7 +266,7 @@ abstract class ConnectionPool<T extends RedisConnection> {
             connectedSuccessful(entry, promise, conn);
             return;
         }
-
+        // 如果没有则新建一个RedisConnection
         createConnection(entry, promise);
     }
 

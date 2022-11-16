@@ -40,12 +40,12 @@ public class LockPubSub extends PublishSubscribe<RedissonLockEntry> {
 
     @Override
     protected void onMessage(RedissonLockEntry value, Long message) {
-        if (message.equals(UNLOCK_MESSAGE)) {
+        if (message.equals(UNLOCK_MESSAGE)) { // 解锁消息
             Runnable runnableToExecute = value.getListeners().poll();
             if (runnableToExecute != null) {
                 runnableToExecute.run();
             }
-
+            // 将Semaphore可用值加1，如果此时有阻塞获取Semaphore的线程，就会唤醒一个
             value.getLatch().release();
         } else if (message.equals(READ_UNLOCK_MESSAGE)) {
             while (true) {

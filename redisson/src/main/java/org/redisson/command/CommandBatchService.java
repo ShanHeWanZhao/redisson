@@ -216,26 +216,28 @@ public class CommandBatchService extends CommandAsyncService {
             throw new IllegalStateException("Batch already executed!");
         }
         
-        if (commands.isEmpty()) {
+        if (commands.isEmpty()) { // 没有待执行命令，直接设为success
             executed.set(true);
             BatchResult<Object> result = new BatchResult<>(Collections.emptyList(), 0);
             return RedissonPromise.newSucceededFuture(result);
         }
 
-        if (isRedisBasedQueue()) {
+        if (isRedisBasedQueue()) { // 默认不走这
             return executeRedisBasedQueue();
         }
 
-        if (this.options.getExecutionMode() != ExecutionMode.IN_MEMORY) {
+        if (this.options.getExecutionMode() != ExecutionMode.IN_MEMORY) { // 默认不走这
             for (Entry entry : commands.values()) {
+                // 事务开启命令（放在所有命令之前）
                 BatchCommandData<?, ?> multiCommand = new BatchCommandData(RedisCommands.MULTI, new Object[] {}, index.incrementAndGet());
                 entry.getCommands().addFirst(multiCommand);
+                // 事务执行命令
                 BatchCommandData<?, ?> execCommand = new BatchCommandData(RedisCommands.EXEC, new Object[] {}, index.incrementAndGet());
                 entry.getCommands().add(execCommand);
             }
         }
         
-        if (this.options.isSkipResult()) {
+        if (this.options.isSkipResult()) { // 默认不走这
             for (Entry entry : commands.values()) {
                 BatchCommandData<?, ?> offCommand = new BatchCommandData(RedisCommands.CLIENT_REPLY, new Object[] { "OFF" }, index.incrementAndGet());
                 entry.getCommands().addFirst(offCommand);
@@ -244,8 +246,9 @@ public class CommandBatchService extends CommandAsyncService {
             }
         }
         
-        if (this.options.getSyncSlaves() > 0) {
+        if (this.options.getSyncSlaves() > 0) { // 存在从节点
             for (Entry entry : commands.values()) {
+                // 添加WAIT命令，定时等待主从节点数据同步成功
                 BatchCommandData<?, ?> waitCommand = new BatchCommandData(RedisCommands.WAIT, 
                                     new Object[] { this.options.getSyncSlaves(), this.options.getSyncTimeout() }, index.incrementAndGet());
                 entry.getCommands().add(waitCommand);
@@ -253,6 +256,7 @@ public class CommandBatchService extends CommandAsyncService {
         }
         
         RPromise<BatchResult<?>> promise = new RedissonPromise<>();
+        // Executor的mainPromise
         CompletableFuture<Void> voidPromise = new CompletableFuture<>();
         if (this.options.isSkipResult()
                 && this.options.getSyncSlaves() == 0) {
@@ -276,7 +280,7 @@ public class CommandBatchService extends CommandAsyncService {
                 promise.trySuccess(new BatchResult<>(Collections.emptyList(), 0));
             });
         } else {
-            voidPromise.whenComplete((res, ex) -> {
+            voidPromise.whenComplete((res, ex) -> {  // RedisExecutor完成（有返回结果了）触发
                 executed.set(true);
                 if (ex != null) {
                     for (Entry e : commands.values()) {
